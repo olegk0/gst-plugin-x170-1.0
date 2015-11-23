@@ -1,0 +1,22 @@
+--- a/src/Makefile.in	2012-02-09 15:40:23.000000000 -0500
++++ b/src/Makefile.in	2012-02-10 09:34:22.278163611 -0500
+@@ -248,7 +248,7 @@
+ 
+ # flags used to compile this plugin
+ # add other _CFLAGS and _LIBS as needed
+-libgstx170_la_CFLAGS = -Wall -Wstrict-prototypes
++libgstx170_la_CFLAGS = $(GST_BASE_CFLAGS) -Wall -Wstrict-prototypes
+ libgstx170_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) -ldecx170h -ldecx170m2 -ldecx170m -ldecx170p -ldecx170v -ldwlx170 -lx170j
+ 
+ # headers we need but don't want installed
+--- a/src/Makefile.am	2009-11-16 07:04:43.000000000 -0500
++++ b/src/Makefile.am	2012-02-10 09:34:03.734169412 -0500
+@@ -18,7 +18,7 @@
+ 
+ # flags used to compile this plugin
+ # add other _CFLAGS and _LIBS as needed
+-libgstx170_la_CFLAGS = -Wall -Wstrict-prototypes
++libgstx170_la_CFLAGS = $(GST_BASE_CFLAGS) -Wall -Wstrict-prototypes
+ libgstx170_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) -ldecx170h -ldecx170m2 -ldecx170m -ldecx170p -ldecx170v -ldwlx170 -lx170j
+ 
+ # headers we need but don't want installed

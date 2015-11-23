@@ -1,0 +1,259 @@
+This patch fixes a number of compilation warnings.  It also allows builds with
+newer versions of gstreamer.
+
+In particular, this patch fixes an issue with assertions by glib that the default
+parameters fall in range:
+
+(gst-launch-0.10:710): GLib-GObject-CRITICAL **: g_param_spec_uint: assertion `default_value >= minimum && default_value <= maximum' failed
+(gst-launch-0.10:710): GLib-GObject-CRITICAL **: g_object_class_install_property: assertion `G_IS_PARAM_SPEC (pspec)' failed
+
+It also fixes a ton of warnings, and may also solve some of the segfaults that would
+pop up every once in a while.
+
+Signed-off-by: Justin Waters <justin.waters@timesys.com>
+
+--- gst-plugin-x170-1.0-orig/src/gstx170.c	2010-01-15 07:48:52.000000000 -0500
++++ gst-plugin-x170-1.0/src/gstx170.c	2012-03-12 17:01:18.577057286 -0400
+@@ -430,6 +430,8 @@ void *img_push_thread(void *arg)
+ 		x170->frm_count--;
+ 		sem_post(&x170->empty_sem);
+ 	}
++
++	return NULL;
+ }
+ #endif
+ 
+@@ -465,10 +467,10 @@ static gboolean gst_x170_alloc(Gstx170 *
+ 	}
+ 	
+ 	if (x170_malloc_linear(x170, 256, &seq_header_mem_info) != DWL_OK) {
+-		printf("Failed to alloc mem for seq header!\n");
++		GST_DEBUG_OBJECT(x170, "Failed to alloc mem for seq header!");
+ 		return FALSE;
+ 	}
+-	seq_header = seq_header_mem_info.virtualAddress;
++	seq_header = (gchar *)seq_header_mem_info.virtualAddress;
+ 		
+ 	switch (x170->codec) {
+ 
+@@ -574,6 +576,9 @@ static gboolean gst_x170_alloc(Gstx170 *
+ 		}
+ 		}
+ 		break;
++	default:
++		GST_DEBUG_OBJECT(x170, "Invalid codec %d", x170->codec);
++		return FALSE;
+ 	}	
+ 
+ 	if (x170_malloc_linear(x170, x170->inbuf_size,
+@@ -683,6 +688,9 @@ static void gst_x170_update_caps(Gstx170
+ 		blue_mask = (int)  0xff000000;
+ 		endianness = (int) 4321;		
+ 		break;
++	default:
++		GST_DEBUG_OBJECT(x170, "Invalid output format.");
++		return;
+ 	}
+ 	x170->caps = gst_caps_new_simple("video/x-raw-rgb",
+ 					 "bpp", G_TYPE_INT, bpp,
+@@ -717,6 +725,9 @@ static GstBuffer *gst_x170_read_image(Gs
+ 		case HT_OUTPUT_RGB32:
+ 			length = x170->width * x170->height * 4;
+ 			break;
++		default:
++			GST_DEBUG_OBJECT(x170, "Invalid output format.");
++			return NULL;
+ 		}
+ 
+ 		GST_DEBUG_OBJECT(x170, "gst_x170_read_image (%dx%d), pp status %d, length %d\n",
+@@ -761,9 +772,6 @@ static GstBuffer *gst_x170_read_jpeg_ima
+ #ifdef USE_THREAD
+ static GstFlowReturn gst_x170_push_image(Gstx170 *x170, GstBuffer *image, int id)
+ {
+-	int i;
+-	GstFlowReturn ret = GST_FLOW_OK;
+-
+ 	sem_wait(&x170->empty_sem);
+ 	x170->frids[x170->write_pos] = id;
+ 	x170->frames[x170->write_pos] = image;
+@@ -1036,7 +1044,7 @@ doflush:
+ 						 "mpeg2 timestamp: %d:%d:%d:%d\n",
+ 						 decPic.picId, decPic.interlaced,
+ 						 decPic.timeCode.hours, decPic.timeCode.minutes,
+-						 decPic.timeCode.seconds, decPic.timeCode.pictures);
++						 decPic.timeCode.seconds);
+ 				GstClockTime timeCode = (GST_SECOND * decPic.picId * x170->fps_d) / x170->fps_n;
+ 				GstClockTime duration = (GST_SECOND * x170->fps_d) / x170->fps_n;
+ 				image = gst_x170_read_image(x170,
+@@ -1257,7 +1265,7 @@ static GstFlowReturn gst_x170_play_vc1(G
+ 			x170->vc1meta.maxCodedWidth = width;
+ 			GST_DEBUG_OBJECT(x170, "gst_x170_play_vc1: VC1 main/simple stream, "
+ 					 "frames=%lu, version=%lu, height=%lu, width=%lu\n",
+-					 num_frames, x170->vc1_v2 + 1, height, width);
++					 num_frames,(unsigned long)x170->vc1_v2 + 1, height, width);
+ 
+ 			decRet = VC1DecUnpackMetaData(buffer + 8, 4, &x170->vc1meta);
+ 			if (decRet != VC1DEC_OK) {
+@@ -1669,8 +1677,8 @@ static gboolean gst_x170_sink_setcaps(Gs
+ 	else if (!strcmp(codec, "video/x-wmv")) {
+ 		GstBuffer *codec_data_buffer;
+ 		const GValue *codec_data;
+-		guint fourcc;
+-		gchar *buf;
++		guint fourcc = 0;
++		guint8 *buf;
+ 		guint size;
+ 
+ 		codec_data = gst_structure_get_value(structure, "codec_data");
+@@ -1691,6 +1699,8 @@ static gboolean gst_x170_sink_setcaps(Gs
+ 				memcpy(seq_header_buf, buf, size);
+ 				seq_header_len = size;
+ 			}
++		} else {
++			return FALSE;
+ 		}
+ 
+ 		if (fourcc == GST_MAKE_FOURCC('W', 'V', 'C', '1')) {
+@@ -1734,14 +1744,14 @@ static gboolean gst_x170_sink_setcaps(Gs
+ 
+ 	if (gst_structure_get_int (structure, "width", &width)) {
+ 		x170->width = width;
+-		GST_DEBUG_OBJECT(x170, "gst_x170_sink_setcaps: setting width to %d/%d",
++		GST_DEBUG_OBJECT(x170, "gst_x170_sink_setcaps: setting width to %d",
+ 				 width);
+ 	}
+ 
+ 	if (gst_structure_get_int (structure, "height", &height)) {
+ 		x170->height = height;
+-		GST_DEBUG_OBJECT(x170, "gst_x170_sink_setcaps: setting height to %d/%d",
+-				 width);
++		GST_DEBUG_OBJECT(x170, "gst_x170_sink_setcaps: setting height to %d",
++				 height);
+ 	}
+ 
+ 	return gst_x170_alloc(x170);
+@@ -1822,26 +1832,26 @@ static void gst_x170_set_property(GObjec
+ 		GST_DEBUG_OBJECT(x170, "scaling set to %f", x170->scaling);
+ 		break;
+ 	case ARG_OUTPUT_WIDTH:
+-		x170->output_width = g_value_get_int(value);
+-		GST_DEBUG_OBJECT(x170, "output width set to %f", x170->output_width);
++		x170->output_width = g_value_get_uint(value);
++		GST_DEBUG_OBJECT(x170, "output width set to %d", x170->output_width);
+ 	case ARG_OUTPUT_HEIGHT:
+-		x170->output_height = g_value_get_int(value);
+-		GST_DEBUG_OBJECT(x170, "output height set to %f", x170->output_height);
++		x170->output_height = g_value_get_uint(value);
++		GST_DEBUG_OBJECT(x170, "output height set to %d", x170->output_height);
+ 	case ARG_CROP_X:
+-		x170->crop_x = (g_value_get_int(value) + 15) & ~15;
++		x170->crop_x = (g_value_get_uint(value) + 15) & ~15;
+ 		GST_DEBUG_OBJECT(x170, "crop_x set to %d", x170->crop_x);
+ 		break;
+ 	case ARG_CROP_Y:
+-		x170->crop_y = (g_value_get_int(value) + 15) & ~15;
++		x170->crop_y = (g_value_get_uint(value) + 15) & ~15;
+ 		GST_DEBUG_OBJECT(x170, "crop_y set to %d", x170->crop_y);
+ 		break;
+ 	case ARG_CROP_WIDTH:
+-		x170->crop_width = (g_value_get_int(value) + 15) & ~15;
++		x170->crop_width = (g_value_get_uint(value) + 15) & ~15;
+ 		GST_DEBUG_OBJECT(x170, "crop_width set to %d",
+ 				 x170->crop_width);
+ 		break;
+ 	case ARG_CROP_HEIGHT:
+-		x170->crop_height = (g_value_get_int(value) + 15) & ~15;
++		x170->crop_height = (g_value_get_uint(value) + 15) & ~15;
+ 		GST_DEBUG_OBJECT(x170, "crop_height set to %d",
+ 				 x170->crop_height);
+ 		break;
+@@ -1850,15 +1860,15 @@ static void gst_x170_set_property(GObjec
+ 		GST_DEBUG_OBJECT(x170, "output set to %d", x170->output);
+ 		break;
+ 	case ARG_INBUF_SIZE:
+-		x170->inbuf_size = g_value_get_int(value);
++		x170->inbuf_size = g_value_get_uint(value);
+ 		GST_DEBUG_OBJECT(x170, "inbuf_size set to %d", x170->inbuf_size);
+ 		break;
+ 	case ARG_INBUF_THRESH:
+-		x170->inbuf_thresh = g_value_get_int(value);
++		x170->inbuf_thresh = g_value_get_uint(value);
+ 		GST_DEBUG_OBJECT(x170, "inbuf_thresh set to %d", x170->inbuf_thresh);
+ 		break;
+ 	case ARG_OUTBUF_SIZE:
+-		x170->outbuf_size = g_value_get_int(value);
++		x170->outbuf_size = g_value_get_uint(value);
+ 		GST_DEBUG_OBJECT(x170, "outbuf_size set to %d", x170->outbuf_size);
+ 		break;
+ 	default:
+@@ -1887,34 +1897,34 @@ static void gst_x170_get_property(GObjec
+ 		g_value_set_float(value, x170->scaling);
+ 		break;
+ 	case ARG_OUTPUT_WIDTH:
+-		g_value_set_int(value, x170->output_width);
++		g_value_set_uint(value, x170->output_width);
+ 		break;
+ 	case ARG_OUTPUT_HEIGHT:
+-		g_value_set_int(value, x170->output_height);
++		g_value_set_uint(value, x170->output_height);
+ 		break;
+ 	case ARG_CROP_X:
+-		g_value_set_int(value, x170->crop_x);
++		g_value_set_uint(value, x170->crop_x);
+ 		break;
+ 	case ARG_CROP_Y:
+-		g_value_set_int(value, x170->crop_y);
++		g_value_set_uint(value, x170->crop_y);
+ 		break;
+ 	case ARG_CROP_WIDTH:
+-		g_value_set_int(value, x170->crop_width);
++		g_value_set_uint(value, x170->crop_width);
+ 		break;
+ 	case ARG_CROP_HEIGHT:
+-		g_value_set_int(value, x170->crop_height);
++		g_value_set_uint(value, x170->crop_height);
+ 		break;
+ 	case ARG_OUTPUT:
+ 		g_value_set_enum(value, x170->output);
+ 		break;
+ 	case ARG_INBUF_SIZE:
+-		g_value_set_int(value, x170->inbuf_size);
++		g_value_set_uint(value, x170->inbuf_size);
+ 		break;
+ 	case ARG_INBUF_THRESH:
+-		g_value_set_int(value, x170->inbuf_thresh);
++		g_value_set_uint(value, x170->inbuf_thresh);
+ 		break;
+ 	case ARG_OUTBUF_SIZE:
+-		g_value_set_int(value, x170->outbuf_size);
++		g_value_set_uint(value, x170->outbuf_size);
+ 		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+@@ -1970,13 +1980,13 @@ static void gst_x170_class_init(Gstx170C
+ 		object_class, ARG_OUTPUT_WIDTH,
+ 		g_param_spec_uint("output_width", "output_width",
+ 				  "Width output",
+-				  16, 1280, 0,
++				  16, 1280, DEFAULT_WIDTH,
+ 				  G_PARAM_READWRITE));
+ 	g_object_class_install_property(
+ 		object_class, ARG_OUTPUT_HEIGHT,
+ 		g_param_spec_uint("output_height", "output_height",
+ 				  "Height output",
+-				  16, 720, 0,
++				  16, 720, DEFAULT_HEIGHT,
+ 				  G_PARAM_READWRITE));
+ 	g_object_class_install_property(
+ 		object_class, ARG_CROP_X,
+@@ -2083,8 +2093,8 @@ static void gst_x170_init(Gstx170 *x170,
+ 	x170->codec = HT_AUTO;
+ 	x170->rotation = HT_ROTATION_0;
+ 	x170->scaling = 1.0;
+-	x170->output_width  = 0;
+-	x170->output_height = 0;
++	x170->output_width  = DEFAULT_WIDTH;
++	x170->output_height = DEFAULT_HEIGHT;
+ 	x170->crop_x = 0;
+ 	x170->crop_y = 0;
+ 	x170->crop_width = 0;
