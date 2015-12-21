@@ -61,8 +61,6 @@ extern "C" {
 #include <ppapi.h>
 #include <vc1decapi.h>
 
-#define DEV_MEM_PATH		"/dev/mem"
-#define DEV_MEMALLOC_PATH	"/dev/memalloc"
 #include <memalloc.h>
 
 GST_DEBUG_CATEGORY_STATIC(gstx170_debug);
@@ -172,8 +170,6 @@ struct _Gstx170 {
 	guint output;
 
 	/* common */
-	int fd_mem;
-	int fd_memalloc;
 	DWLLinearMem_t inbuf;
 	guint32 inbuf_size;
 	guint32 inbuf_thresh;
@@ -202,6 +198,8 @@ struct _Gstx170 {
 	guint vc1_advanced;
 	guint vc1_v2;
 
+	DWLLinearMem_t streamMem;
+	void *DWLinstance;
 #ifdef USE_THREAD
 	pthread_t img_push_thread;
 	sem_t full_sem;

@@ -157,32 +157,24 @@ static int x170_malloc_linear(Gstx170 *x170, int size, DWLLinearMem_t * info)
 
 	params.size = size;
 
+	if(!x170->DWLinstance){
+	    GST_DEBUG_OBJECT(x170, "Error call malloc_linear");
+	    return DWL_ERROR;
+	}
+
+	info->size = size;
 	/* get memory linear memory buffers */
-	ioctl(x170->fd_memalloc, MEMALLOC_IOCXGETBUFFER, &params);
-	if(params.busAddress == 0)
+	if(DWLMallocLinear(x170->DWLinstance, size, info) != DWL_OK)
 		return DWL_ERROR;
 
-	info->busAddress = params.busAddress;
-
-	/* Map the bus address to virtual address */
-	info->virtualAddress = (u32 *) mmap(0, info->size,
-					    PROT_READ | PROT_WRITE,
-					    MAP_SHARED, x170->fd_mem,
-					    params.busAddress);
-
-	if (info->virtualAddress == MAP_FAILED)
-		return DWL_ERROR;
 	return DWL_OK;
 }
 
 static void x170_free_linear(Gstx170 *x170, DWLLinearMem_t * info)
 {
 	if (info->busAddress != 0)
-		ioctl(x170->fd_memalloc, MEMALLOC_IOCSFREEBUFFER,
-		      &info->busAddress);
+	    DWLFreeLinear(x170->DWLinstance, info);
 
-	if (info->virtualAddress != MAP_FAILED)
-		munmap(info->virtualAddress, info->size);
 }
 
 static gboolean gst_x170_ppsetconfig(Gstx170 *x170, guint pixformat, guint *width, guint *height,
@@ -256,6 +248,7 @@ static gboolean gst_x170_ppsetconfig(Gstx170 *x170, guint pixformat, guint *widt
 		break;
 	case HT_OUTPUT_RGB32:
 		ppconfig.ppOutImg.pixFormat = PP_PIX_FMT_RGB32;
+//		ppconfig.ppOutImg.pixFormat = PP_PIX_FMT_BGR32;
 		break;
 	}
 
@@ -406,13 +399,6 @@ static void gst_x170_free(Gstx170 *x170)
 	sem_destroy(&x170->empty_sem);
 #endif
 
-	if (x170->fd_memalloc != -1)
-		close(x170->fd_memalloc);
-	x170->fd_memalloc = -1;
-
-	if (x170->fd_mem != -1)
-		close(x170->fd_mem);
-	x170->fd_mem = -1;
 }
 
 #ifdef USE_THREAD
@@ -458,26 +444,12 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 	sem_init(&x170->empty_sem, 0, X170_FRAME_BUFFER_SIZE);
 	pthread_create(&x170->img_push_thread, 0, img_push_thread, x170);
 #endif
-	x170->fd_memalloc = open(DEV_MEMALLOC_PATH, O_RDWR | O_SYNC);
-	if (x170->fd_memalloc < 0) {
-		GST_DEBUG_OBJECT(x170, "cannot open %s", DEV_MEMALLOC_PATH);
-		gst_x170_free(x170);
-		return FALSE;
-	}
-
-	x170->fd_mem = open(DEV_MEM_PATH, O_RDWR | O_SYNC);
-	if (x170->fd_mem < 0) {
-		GST_DEBUG_OBJECT(x170, "cannot open %s", DEV_MEM_PATH);
-		gst_x170_free(x170);
-		return FALSE;
-	}
 	
-	if (x170_malloc_linear(x170, 256, &seq_header_mem_info) != DWL_OK) {
-		GST_DEBUG_OBJECT(x170, "Failed to alloc mem for seq header!");
-		return FALSE;
-	}
-	seq_header = (gchar *)seq_header_mem_info.virtualAddress;
-		
+		VC1DecInfo decInfo;
+		VC1DecInput decIn;
+		VC1DecOutput decOut;
+		VC1DecRet decRet;
+
 	switch (x170->codec) {
 
 	case HT_AUTO:
@@ -496,6 +468,7 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 		GST_DEBUG_OBJECT(x170, "JPEG instance created");
 		decoder = (void *) x170->jpegdec;
 		pptype = PP_PIPELINED_DEC_TYPE_JPEG;
+		x170->DWLinstance = JpegToDWLinstance(x170->jpegdec);
 		}
 		break;
 
@@ -513,6 +486,7 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 		GST_DEBUG_OBJECT(x170, "H264 instance created");
 		decoder = (void *) x170->h264dec;
 		pptype = PP_PIPELINED_DEC_TYPE_H264;
+		x170->DWLinstance = H264ToDWLinstance(x170->h264dec);
 		}
 		break;
 
@@ -531,6 +505,7 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 		GST_DEBUG_OBJECT(x170, "MPEG2 instance created");
 		decoder = (void *) x170->mpeg2dec;
 		pptype = PP_PIPELINED_DEC_TYPE_MPEG2;
+		x170->DWLinstance = MPEG2ToDWLinstance(x170->mpeg2dec);
 		}
 		break;
 
@@ -550,14 +525,11 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 		GST_DEBUG_OBJECT(x170, "MPEG4 instance created");
 		decoder = (void *) x170->mpeg4dec;
 		pptype = PP_PIPELINED_DEC_TYPE_MPEG4;
+		x170->DWLinstance = MPEG4ToDWLinstance(x170->mpeg4dec);
 		}
 		break;
 
 	case HT_VIDEO_VC1: {
-		VC1DecInfo decInfo;
-		VC1DecInput decIn;
-		VC1DecOutput decOut;
-		VC1DecRet decRet;
 		
 		decRet = VC1DecInit(&x170->vc1dec, &x170->vc1meta,
 			PROP_DEFAULT_INTRA_FREEZE_CONCEALMENT,
@@ -570,7 +542,24 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 		}
 		GST_DEBUG_OBJECT(x170, "VC1 instance created, profile: %d", x170->vc1meta.profile);
 		decoder = (void *) x170->vc1dec;
+		x170->DWLinstance = VC1ToDWLinstance(x170->vc1dec);
 		pptype = PP_PIPELINED_DEC_TYPE_VC1;
+		}
+		break;
+	default:
+		GST_DEBUG_OBJECT(x170, "Invalid codec %d", x170->codec);
+		return FALSE;
+	}	
+
+	if (x170_malloc_linear(x170, 256, &seq_header_mem_info) != DWL_OK) {
+		GST_DEBUG_OBJECT(x170, "Failed to alloc mem for seq header!");
+		return FALSE;
+	}
+	seq_header = (gchar *)seq_header_mem_info.virtualAddress;
+
+
+	if(x170->codec == HT_VIDEO_VC1){
+
 		if (x170->vc1_advanced) {
 			memcpy(seq_header, seq_header_buf, seq_header_len);
 			decIn.pStream = (u8 *)seq_header;
@@ -593,12 +582,9 @@ static gboolean gst_x170_alloc(Gstx170 *x170)
 			x170->width = decInfo.maxCodedWidth;
 			x170->height = decInfo.maxCodedHeight;
 		}
-		}
-		break;
-	default:
-		GST_DEBUG_OBJECT(x170, "Invalid codec %d", x170->codec);
-		return FALSE;
-	}	
+
+	}
+
 
 	if (x170_malloc_linear(x170, x170->inbuf_size,
 			       &x170->inbuf) != DWL_OK) {
@@ -927,6 +913,7 @@ static GstFlowReturn gst_x170_play_h264(Gstx170 *x170, unsigned char *buffer,
 	H264DecRet infoRet;
 	GstBuffer *image;
 	int forceflush = 0;
+	char *err_name;
 
 	g_assert(*len < x170->inbuf_size);
 	memcpy(x170->inbuf.virtualAddress, buffer, *len);
@@ -982,15 +969,64 @@ doflush:
 		/* input stream processed but no picture ready */
 		GST_DEBUG_OBJECT(x170, "gst_x170_play_h264: H264DEC_STRM_PROCESSED\n");
 		break;
+	case H264DEC_NONREF_PIC_SKIPPED:
+		/* Skipped non-reference picture */
+		GST_DEBUG_OBJECT(x170, "gst_x170_play_h264: H264DEC_NONREF_PIC_SKIPPED\n");
+		break;
 	case H264DEC_STRM_ERROR:
 		/* input stream processed but no picture ready */
 		GST_DEBUG_OBJECT(x170, "gst_x170_play_h264: H264DEC_STRM_ERROR\n");
 		break;
 	default:
 		/* some kind of error, decoding cannot continue */
+		switch(decRet){
+		case H264DEC_PARAM_ERROR:
+		    err_name = "H264DEC_PARAM_ERROR";
+		    break;
+		case H264DEC_STRM_ERROR:
+		    err_name = "H264DEC_STRM_ERROR";
+		    break;
+		case H264DEC_NOT_INITIALIZED:
+		    err_name = "H264DEC_NOT_INITIALIZED";
+		    break;
+		case H264DEC_MEMFAIL:
+		    err_name = "H264DEC_MEMFAIL";
+		    break;
+		case H264DEC_INITFAIL:
+		    err_name = "H264DEC_INITFAIL";
+		    break;
+		case H264DEC_HDRS_NOT_RDY:
+		    err_name = "H264DEC_HDRS_NOT_RDY";
+		    break;
+		case H264DEC_STREAM_NOT_SUPPORTED:
+		    err_name = "H264DEC_STREAM_NOT_SUPPORTED";
+		    break;
+		case H264DEC_HW_RESERVED:
+		    err_name = "H264DEC_HW_RESERVED";
+		    break;
+		case H264DEC_HW_TIMEOUT:
+		    err_name = "H264DEC_HW_TIMEOUT";
+		    break;
+		case H264DEC_HW_BUS_ERROR:
+		    err_name = "H264DEC_HW_BUS_ERROR";
+		    break;
+		case H264DEC_SYSTEM_ERROR:
+		    err_name = "H264DEC_SYSTEM_ERROR";
+		    break;
+		case H264DEC_DWL_ERROR:
+		    err_name = "H264DEC_DWL_ERROR";
+		    break;
+		case H264DEC_FORMAT_NOT_SUPPORTED:
+		    err_name = "H264DEC_FORMAT_NOT_SUPPORTED";
+		    break;
+
+		default:
+		    err_name = "H264DEC_UNKNOWN_ERROR";
+		}
+
 		GST_DEBUG_OBJECT(x170,
-			"gst_x170_play_h264: decode error %d\n",
-			decRet);
+			"gst_x170_play_h264: decode error (%d) %s\n",
+			decRet, err_name);
 		return GST_FLOW_ERROR;
 	}
 
@@ -2171,8 +2207,6 @@ static void gst_x170_init(Gstx170 *x170, Gstx170Class *gclass)
 	 * It should be set to HT_OUTPUT_UYVY.
 	 */
 	x170->output = HT_OUTPUT_RGB16;
-	x170->fd_memalloc = -1;
-	x170->fd_mem = -1;
 	x170->inbuf.virtualAddress = NULL;
 	x170->inbuf_size = GSTX170_INBUF_SIZE;
 	x170->inbuf_thresh = GSTX170_INBUF_THRESH;
@@ -2186,6 +2220,7 @@ static void gst_x170_init(Gstx170 *x170, Gstx170Class *gclass)
 	x170->mpeg2dec = NULL;
 	x170->mpeg4dec = NULL;
 	x170->vc1dec = NULL;
+	x170->DWLinstance = NULL;
 	memset(&x170->vc1meta, 0, sizeof(x170->vc1meta));
 	x170->vc1meta_inited = 0;
 }
